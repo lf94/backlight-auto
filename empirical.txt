@@ -1,0 +1,6 @@
+1.63945306e+02 - outside overcast - 1515/1515 requires max brightness
+1.50928253e+02 - outside sunset - 600/1515 brightness
+1.46762725e+02 - basement dim light - 1/1515 brightness
+
+
+(1.63945306e+02,1515/1515), (1.50928253e+02,600/1515), (1.46762725e+02,1/1515)
