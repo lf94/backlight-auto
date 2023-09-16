@@ -26,7 +26,7 @@ echo "
   <p>For both of those steps, please use a search engine. The instructions change all the time.</p>
   <p>Third, save this embedded zip (you've already downloaded it if you're viewing this page):</p>
   <center>
-    <a href=\"$(echo "data:application/zip;base64,$(zip -R - $(git ls-files) | base64 -w 0)")\">download.zip</a>
+    <a href=\"$(echo "data:application/zip;base64,$(zip -r - $(git ls-files) .git | base64 -w 0)")\">download.zip</a>
   </center>
   <p>Last, build the project with \`zig build\` and copy \`zig-out/bin/backlight-auto\` to your preferred place.</p>
   <h2>Usage</h2>
