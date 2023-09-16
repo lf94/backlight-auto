@@ -36,7 +36,8 @@ echo "
   <p>Run \`backlight-auto --measure --path-dev-video /dev/video0\`.</p>
   <p>Take the number printed and pass it into backlight-auto when you run it normally.</p>
   <p>\`backlight-auto --min-stimulus-length 1.48554e+02 --path-dev-video /dev/video0 --path-backlight /sys/class/backlight/intel_backlight/\`</p>
-  <p>You'll need to adjust the permissions of your backlight files or run the program as super user.</p>
+  <p>The program will output the recommended brightness value to be placed in the \`/sys/class/backlight/X/brightness\` file.</p>
+  <p>I personally use the \`brightnessctl\` program, like so: \`brightnessctl s $(backlight-auto ...)\`.</p>
   <p>To run it periodically, create a systemd file.</p>
   <p>I personally assign it to a function key and run it when needed.</p>
   <h2>Information</h2>
