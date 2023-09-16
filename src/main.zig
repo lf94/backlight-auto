@@ -15,7 +15,7 @@ const libyuv = @cImport(@cInclude("libyuv.h"));
 // TDPF_2007_art00005_Sergey-Bezryadin.pdf
 // Convert RGB to stimulus length
 
-const USAGE = "Usage: backlight-auto \n\t[--measure]\n\t --min-stimulus-length <decimal>\n\t --path-dev-video </dev/videoN>\n\t --path-backlight </sys/class/backlight/<X>/>\n";
+const USAGE = "Usage: backlight-auto \n\t[--measure]\n\t [--sample-time <integer>]\n\t --min-stimulus-length <decimal>\n\t --path-dev-video </dev/videoN>\n\t --path-backlight </sys/class/backlight/<X>/>\n";
 
 // Cohen metrics
 const cm: [3][3]f32 = .{
@@ -115,7 +115,7 @@ fn isSupportedFormat(target: u32) bool {
   return false;
 }
 
-fn readWebcamPixels(allocator: std.mem.Allocator, path: []const u8) !?[]const u8 {
+fn readWebcamPixels(allocator: std.mem.Allocator, path: []const u8, sample_time: u8) !?[]const u8 {
   const stdout = std.io.getStdOut().writer();
 
   const fd = fnctl.open(@ptrCast(path), fnctl.O_RDWR);
@@ -281,7 +281,7 @@ fn readWebcamPixels(allocator: std.mem.Allocator, path: []const u8) !?[]const u8
   }
 
   var seconds: u8 = 0;
-  while (seconds < 10) : (std.time.sleep(1e9)) {
+  while (seconds < sample_time) : (std.time.sleep(1e9)) {
     seconds += 1;
     _ = ioctl(fd, v4l2.VIDIOC_QBUF, &buffer);
     _ = ioctl(fd, v4l2.VIDIOC_STREAMON, &v4l2.V4L2_BUF_TYPE_VIDEO_CAPTURE);
@@ -311,6 +311,7 @@ fn readWebcamPixels(allocator: std.mem.Allocator, path: []const u8) !?[]const u8
 const Args = struct {
   measure: bool,
   min_stimulus_length: ?f32,
+  sample_time: u8,
   // Path to backlight (might have multiple monitors)
   path_backlight: ?[]const u8,
   // Path to video device (might have multiple webcams
@@ -325,6 +326,7 @@ pub fn main() !void {
   var args = Args {
     .measure = false,
     .min_stimulus_length = 0.0,
+    .sample_time = 4,
     .path_backlight = null,
     .path_dev_video = null,
   };
@@ -334,6 +336,11 @@ pub fn main() !void {
 
   while (args_iter.next()) |arg| {
     if (std.mem.eql(u8, arg, "--measure")) { args.measure = true; }
+    if (std.mem.eql(u8, arg, "--sample-time")) {
+      if(args_iter.next()) |sample_time| {
+        args.sample_time = try std.fmt.parseInt(u8, sample_time, 10);
+      }
+    }
     if (std.mem.eql(u8, arg, "--min-stimulus-length")) {
       if(args_iter.next()) |min_stimulus_length| {
         args.min_stimulus_length = try std.fmt.parseFloat(f32, min_stimulus_length);
@@ -358,7 +365,7 @@ pub fn main() !void {
     const path_brightness_max = try std.mem.concat(allocator, u8, &.{ path_backlight, "/max_brightness" });
     defer allocator.free(path_brightness_max);
 
-    const pixels_maybe = try readWebcamPixels(allocator, path_dev_video);
+    const pixels_maybe = try readWebcamPixels(allocator, path_dev_video, args.sample_time);
     if (pixels_maybe) |pixels| {
       defer allocator.free(pixels);
       const backlight_max_brightness = try readBacklightFile(allocator, path_brightness_max);

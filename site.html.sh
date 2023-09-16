@@ -39,6 +39,9 @@ echo "
   <p>You'll need to adjust the permissions of your backlight files or run the program as super user.</p>
   <p>To run it periodically, create a systemd file.</p>
   <p>I personally assign it to a function key and run it when needed.</p>
+  <h2>Information</h2>
+  <p>The brightness calculation from the video input is based off the paper called \"Brightness Calculation in Digital Image Processing\" by Sergey Bezryadin, Pavel Bourov, and Dmitry Ilinih from January 2007.</p>
+  <p>It takes by default 4 seconds to let the webcam \"get hot\", i.e. get proper exposure. This can be adjusted by passing \`--sample-time some-number\`.</p>
   <h2>Contributions</h2>
   <p>Email len@falken.directory with suggestions or patches.</p><
   <p>This tool is small, with the aim to be naturally forked and maintained forever.</p>
