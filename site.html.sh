@@ -41,7 +41,7 @@ echo "
   <p>To run it periodically, create a systemd file.</p>
   <p>I personally assign it to a function key and run it when needed.</p>
   <p>For example, in i3wm's configuration file, I use this line:</p>
-  <p>bindsym XF86Favorites exec /bin/sh -c brightnessctl s \$(backlight-auto --min-stimulus-length 1.47808837e+02 --path-dev-video /dev/video0 --path-backlight /sys/class/backlight/intel_backlight/)</p>
+  <p>bindsym XF86Favorites exec brightnessctl s \$(/home/lee/bin/backlight-auto --min-stimulus-length 1.47808837e+02 --path-dev-video /dev/video0 --path-backlight /sys/class/backlight/intel_backlight/)</p>
   <h2>Information</h2>
   <p>The brightness calculation from the video input is based off the paper called \"Brightness Calculation in Digital Image Processing\" by Sergey Bezryadin, Pavel Bourov, and Dmitry Ilinih from January 2007.</p>
   <p>It takes by default 4 seconds to let the webcam \"get hot\", i.e. get proper exposure. This can be adjusted by passing \`--sample-time some-number\`.</p>
