@@ -365,7 +365,9 @@ pub fn main() !void {
     if (pixels_maybe) |pixels| {
       defer allocator.free(pixels);
       const avg_stim_len = averageStimulusLength(pixels);
-      try stdout.print("{}\n", .{ avg_stim_len });
+      if (args.measure) {
+        try stdout.print("{}\n", .{ avg_stim_len });
+      }
 
       if (args.measure == false)
       if (args.path_backlight) |path_backlight| {
@@ -375,15 +377,7 @@ pub fn main() !void {
 
         if (args.min_stimulus_length) |min_stimulus_length| {
           const brightness = calculateNewBrightness(avg_stim_len, backlight_max_brightness, min_stimulus_length);
-          try stdout.print("{d}\n", .{ brightness });
-          const path_brightness = try std.mem.concat(allocator, u8, &.{ path_backlight, "/brightness" });
-          defer allocator.free(path_brightness);
-          const file_brightness = try std.fs.openFileAbsolute(
-            path_brightness,
-            .{ .mode = std.fs.File.OpenMode.read_write }
-          );
-          const writer = file_brightness.writer();
-          _ = std.fmt.format(writer, "{d}", .{ brightness }) catch return;
+          try stdout.print("{d}", .{ brightness });
         }
       } else { try stdout.print(USAGE, .{}); };
     }
