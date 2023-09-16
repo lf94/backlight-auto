@@ -15,7 +15,7 @@ const libyuv = @cImport(@cInclude("libyuv.h"));
 // TDPF_2007_art00005_Sergey-Bezryadin.pdf
 // Convert RGB to stimulus length
 
-const USAGE = "Usage: backlight-auto \n\t[--measure]\n\t [--sample-time <integer>]\n\t --min-stimulus-length <decimal>\n\t --path-dev-video </dev/videoN>\n\t --path-backlight </sys/class/backlight/<X>/>\n";
+const USAGE = "Usage: backlight-auto \n\t[--measure]\n\t[--sample-time <integer>]\n\t--min-stimulus-length <decimal>\n\t--path-dev-video </dev/videoN>\n\t--path-backlight </sys/class/backlight/<X>/>\n";
 
 // Cohen metrics
 const cm: [3][3]f32 = .{
@@ -361,31 +361,31 @@ pub fn main() !void {
   const stdout = std.io.getStdOut().writer();
 
   if (args.path_dev_video) |path_dev_video| {
-  if (args.path_backlight) |path_backlight| {
-    const path_brightness_max = try std.mem.concat(allocator, u8, &.{ path_backlight, "/max_brightness" });
-    defer allocator.free(path_brightness_max);
-
     const pixels_maybe = try readWebcamPixels(allocator, path_dev_video, args.sample_time);
     if (pixels_maybe) |pixels| {
       defer allocator.free(pixels);
-      const backlight_max_brightness = try readBacklightFile(allocator, path_brightness_max);
       const avg_stim_len = averageStimulusLength(pixels);
       try stdout.print("{}\n", .{ avg_stim_len });
 
       if (args.measure == false)
-      if (args.min_stimulus_length) |min_stimulus_length| {
-        const brightness = calculateNewBrightness(avg_stim_len, backlight_max_brightness, min_stimulus_length);
-        try stdout.print("{d}\n", .{ brightness });
-        const path_brightness = try std.mem.concat(allocator, u8, &.{ path_backlight, "/brightness" });
-        defer allocator.free(path_brightness);
-        const file_brightness = try std.fs.openFileAbsolute(
-          path_brightness,
-          .{ .mode = std.fs.File.OpenMode.read_write }
-        );
-        const writer = file_brightness.writer();
-        _ = std.fmt.format(writer, "{d}", .{ brightness }) catch return;
-      };
+      if (args.path_backlight) |path_backlight| {
+        const path_brightness_max = try std.mem.concat(allocator, u8, &.{ path_backlight, "/max_brightness" });
+        const backlight_max_brightness = try readBacklightFile(allocator, path_brightness_max);
+        defer allocator.free(path_brightness_max);
+
+        if (args.min_stimulus_length) |min_stimulus_length| {
+          const brightness = calculateNewBrightness(avg_stim_len, backlight_max_brightness, min_stimulus_length);
+          try stdout.print("{d}\n", .{ brightness });
+          const path_brightness = try std.mem.concat(allocator, u8, &.{ path_backlight, "/brightness" });
+          defer allocator.free(path_brightness);
+          const file_brightness = try std.fs.openFileAbsolute(
+            path_brightness,
+            .{ .mode = std.fs.File.OpenMode.read_write }
+          );
+          const writer = file_brightness.writer();
+          _ = std.fmt.format(writer, "{d}", .{ brightness }) catch return;
+        }
+      } else { try stdout.print(USAGE, .{}); };
     }
-  } else { try stdout.print(USAGE, .{}); }
   } else { try stdout.print(USAGE, .{}); }
 }
