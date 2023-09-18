@@ -24,7 +24,7 @@ echo "
   <p>The first step is to install Zig.</p>
   <p>The second step is to install libyuv and video4linux2 headers.</p>
   <p>For both of those steps, please use a search engine. The instructions change all the time.</p>
-  <p>Third, save this embedded zip (you've already downloaded it if you're viewing this page):</p>
+  <p>Third, save this embedded zip (you've already downloaded it if you're viewing this page) which contains the whole project and its git repository:</p>
   <center>
     <a href=\"$(echo "data:application/zip;base64,$(zip -r - $(git ls-files) .git | base64 -w 0)")\">download.zip</a>
   </center>
