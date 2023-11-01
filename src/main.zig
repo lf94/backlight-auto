@@ -1,5 +1,4 @@
 const std = @import("std");
-const math = std.math;
 
 const fnctl = @cImport(@cInclude("fcntl.h"));
 const ioctl = @cImport(@cInclude("sys/ioctl.h")).ioctl;
@@ -9,32 +8,88 @@ const unistd = @cImport(@cInclude("unistd.h"));
 const v4l2 = @cImport(@cInclude("linux/videodev2.h"));
 const libyuv = @cImport(@cInclude("libyuv.h"));
 
+const clap = @import("clap");
+
 // If you're unsure about your video4linux2 setup, try this to capture a frame from the webcam:
 // v4l2-ctl --device /dev/video0 --set-fmt-video=width=1280,height=720,pixelformat=YUYV --stream-mmap --stream-to=frame.raw --stream-count=1
 
 // TDPF_2007_art00005_Sergey-Bezryadin.pdf
 // Convert RGB to stimulus length
 
-const USAGE = "Usage: backlight-auto \n\t[--measure]\n\t[--sample-time <integer>]\n\t--min-stimulus-length <decimal>\n\t--path-dev-video </dev/videoN>\n\t--path-backlight </sys/class/backlight/<X>/>\n";
+pub fn main() !void {
+    var GPA = std.heap.GeneralPurposeAllocator(.{}){};
+    defer _ = GPA.deinit();
+    const allocator = GPA.allocator();
 
-// Cohen metrics
-const cm: [3][3]f32 = .{
-    .{ 0.2053, 0.7125, 0.4670 },
-    .{ 1.8537, -1.2797, -0.4429 },
-    .{ -0.3655, 1.0120, -0.6104 },
-};
+    const params = comptime clap.parseParamsComptime(
+        \\-m, --measure              Measure the "darkest stimulus" length of the webcam. Make sure the webcam is covered!
+        \\-s, --sample-time <u8>          Brightness sampling time (in seconds). Default is 4.
+        \\-l, --min-stimulus-length <f32> Set the stimulus length calculated with `--measure`.
+        \\-v, --path-dev-video <str>      Path to the video device (eg. /dev/video0).
+        \\-b, --path-backlight <str>      Path to system backligh directory (eg. /sys/class/backlight/intel_backlight)
+        \\-h, --help                      Display this help and exit.
+    );
+    const parsers = comptime .{
+        .str = clap.parsers.string,
+        .f32 = clap.parsers.float(f32),
+        .u8 = clap.parsers.int(u8, 10),
+    };
 
-// CIE matrix
-const cie: [3][3]f32 = .{
-    .{ 0.49000, 0.31000, 0.20000 },
-    .{ 0.17697, 0.81240, 0.01063 },
-    .{ 0.00000, 0.01000, 0.99000 },
-};
+    var diag = clap.Diagnostic{};
+    var c = clap.parse(clap.Help, &params, parsers, .{ .diagnostic = &diag }) catch |err| {
+        diag.report(std.io.getStdErr().writer(), err) catch {};
+        return err;
+    };
+    defer c.deinit();
+
+    const stdout = std.io.getStdOut().writer();
+
+    if (c.args.help != 0) return clap.help(stdout, clap.Help, &params, .{});
+
+    if (c.args.@"path-dev-video") |path_dev_video| {
+        const pixels = try readWebcamPixels(
+            allocator,
+            path_dev_video,
+            c.args.@"sample-time" orelse 4,
+        );
+        defer allocator.free(pixels);
+
+        const avg_stim_len = averageStimulusLength(pixels);
+        if (c.args.measure != 0) {
+            try stdout.print("{}\n", .{avg_stim_len});
+        }
+
+        if (c.args.measure == 0)
+            if (c.args.@"path-backlight") |path_backlight| {
+                const path_brightness_max = try std.mem.concat(allocator, u8, &.{
+                    path_backlight,
+                    "/max_brightness",
+                });
+                const backlight_max_brightness = try readBacklightFile(
+                    allocator,
+                    path_brightness_max,
+                );
+                defer allocator.free(path_brightness_max);
+
+                if (c.args.@"min-stimulus-length") |min_stimulus_length| {
+                    const brightness = calculateNewBrightness(avg_stim_len, backlight_max_brightness, min_stimulus_length);
+                    try stdout.print("{d}", .{brightness});
+                }
+            } else return clap.usage(stdout, clap.Help, &params);
+    } else return clap.usage(stdout, clap.Help, &params);
+}
 
 const RGB = struct { r: u8, g: u8, b: u8 };
 const XYZ = struct { x: f32, y: f32, z: f32 };
 
 fn rgb2xyz(rgb: RGB) XYZ {
+    // CIE matrix
+    const cie: [3][3]f32 = .{
+        .{ 0.49000, 0.31000, 0.20000 },
+        .{ 0.17697, 0.81240, 0.01063 },
+        .{ 0.00000, 0.01000, 0.99000 },
+    };
+
     return XYZ{
         .x = cie[0][0] * @as(f32, @floatFromInt(rgb.r)) + cie[0][1] *
             @as(f32, @floatFromInt(rgb.g)) + cie[0][2] * @as(f32, @floatFromInt(rgb.b)),
@@ -46,10 +101,17 @@ fn rgb2xyz(rgb: RGB) XYZ {
 }
 
 fn xyzToStimulusLength(xyz: XYZ) f32 {
+    // Cohen metrics
+    const cm: [3][3]f32 = .{
+        .{ 0.2053, 0.7125, 0.4670 },
+        .{ 1.8537, -1.2797, -0.4429 },
+        .{ -0.3655, 1.0120, -0.6104 },
+    };
+
     const d = cm[0][0] * xyz.x + cm[0][1] * xyz.y + cm[0][2] * xyz.z;
     const e = cm[1][0] * xyz.x + cm[1][1] * xyz.y + cm[1][2] * xyz.z;
     const f = cm[2][0] * xyz.x + cm[2][1] * xyz.y + cm[2][2] * xyz.z;
-    return math.sqrt(d * d + e * e + f * f);
+    return @sqrt(d * d + e * e + f * f);
 }
 
 const DeviceImageBytes = struct {
@@ -61,7 +123,7 @@ fn deviceImageBytesFromYUVToRGB(
     allocator: std.mem.Allocator,
     dib: DeviceImageBytes,
     format: v4l2.v4l2_format,
-) ?[]const u8 {
+) ![]const u8 {
     // How to actually call this, I learned from:
     // libyuv in unit_test/color_test.cc:166-170
     // YUV converted to ARGB.
@@ -69,7 +131,7 @@ fn deviceImageBytesFromYUVToRGB(
     const w: c_int = @intCast(format.fmt.pix.width);
     const h: c_int = @intCast(format.fmt.pix.height);
 
-    var pixels = allocator.alloc(u8, @as(usize, @intCast(w)) * @as(usize, @intCast(h)) * 4) catch return null;
+    var pixels = try allocator.alloc(u8, @as(usize, @intCast(w)) * @as(usize, @intCast(h)) * 4);
 
     _ = libyuv.I422ToARGB(@ptrCast(dib.start), w, @ptrCast(dib.start), @divTrunc((w + 1), 2), @ptrCast(dib.start), @divTrunc((w + 1), 2), @ptrCast(pixels), w * 4, w, h);
 
@@ -98,12 +160,14 @@ fn readBacklightFile(allocator: std.mem.Allocator, path: []const u8) !f32 {
     const file = try std.fs.openFileAbsolute(path, .{ .mode = std.fs.File.OpenMode.read_only });
     const file_text = try file.readToEndAllocOptions(allocator, 256, null, 8, '\n');
     defer allocator.free(file_text);
-    const text_as_u16: u16 = try std.fmt.parseInt(u16, file_text[0 .. file_text.len - 1], 10);
-    return @floatFromInt(text_as_u16);
+    const backlight: u16 = try std.fmt.parseInt(u16, file_text[0 .. file_text.len - 1], 10);
+    return @floatFromInt(backlight);
 }
 
 fn calculateNewBrightness(avgsl: f32, max_brightness: f32, min_stimulus_length: f32) u16 {
-    return @intFromFloat(@max(1.0, max_brightness * (std.math.sqrt(@max(0.0, avgsl - min_stimulus_length)) / 4.0)));
+    return @intFromFloat(
+        @max(1.0, max_brightness * (@sqrt(@max(0.0, avgsl - min_stimulus_length)) / 4.0)),
+    );
 }
 
 fn isSupportedFormat(target: u32) bool {
@@ -118,12 +182,11 @@ fn isSupportedFormat(target: u32) bool {
     return false;
 }
 
-fn readWebcamPixels(allocator: std.mem.Allocator, path: []const u8, sample_time: u8) !?[]const u8 {
-    const stdout = std.io.getStdOut().writer();
-
+fn readWebcamPixels(allocator: std.mem.Allocator, path: []const u8, sample_time: u8) ![]const u8 {
     const fd = fnctl.open(@ptrCast(path), fnctl.O_RDWR);
     if (fd == -1) {
-        return null;
+        std.log.err("fnctl.open failed", .{});
+        return error.FNCTLOpenError;
     }
 
     const cap = v4l2.v4l2_capability{
@@ -137,17 +200,17 @@ fn readWebcamPixels(allocator: std.mem.Allocator, path: []const u8, sample_time:
     };
 
     if (ioctl(fd, v4l2.VIDIOC_QUERYCAP, &cap) == -1) {
-        return null;
+        return error.SetCapabilityFailed;
     }
 
     if (cap.capabilities & v4l2.V4L2_CAP_VIDEO_CAPTURE != v4l2.V4L2_CAP_VIDEO_CAPTURE) {
-        try stdout.print("Video capture not supported\n", .{});
-        return null;
+        std.log.err("Video capture not supported", .{});
+        return error.VideoCaptureUnsupported;
     }
 
     if (cap.capabilities & v4l2.V4L2_CAP_STREAMING != v4l2.V4L2_CAP_STREAMING) {
-        try stdout.print("V4L2_CAP_STREAMING not supported.\n", .{});
-        return null;
+        std.log.err("V4L2_CAP_STREAMING not supported", .{});
+        return error.StreamingUnsupported;
     }
 
     const input = v4l2.v4l2_input{
@@ -163,13 +226,10 @@ fn readWebcamPixels(allocator: std.mem.Allocator, path: []const u8, sample_time:
     };
 
     if (ioctl(fd, v4l2.VIDIOC_ENUMINPUT, &input) == -1) {
-        try stdout.print("Failure to get input\n", .{});
-        return null;
+        std.log.err("Failure to get input", .{});
+        return error.InputFailure;
     }
 
-    var found_format: bool = false;
-    var errno: c_int = 0;
-    var index: u8 = 0;
     var fmtdesc = v4l2.v4l2_fmtdesc{
         .index = 0,
         .type = v4l2.V4L2_BUF_TYPE_VIDEO_CAPTURE,
@@ -180,27 +240,22 @@ fn readWebcamPixels(allocator: std.mem.Allocator, path: []const u8, sample_time:
         .reserved = .{},
     };
 
-    while (errno != -1) : (index += 1) {
-        fmtdesc.index = index;
-        errno = ioctl(fd, v4l2.VIDIOC_ENUM_FMT, &fmtdesc);
+    const pixelformat = blk: {
+        for (0..std.math.maxInt(u8)) |index| {
+            fmtdesc.index = @intCast(index);
 
-        if (errno == 0) {
-            if (isSupportedFormat(fmtdesc.pixelformat) == false) {
+            if (ioctl(fd, v4l2.VIDIOC_ENUM_FMT, &fmtdesc) == -1) break;
+
+            if (!isSupportedFormat(fmtdesc.pixelformat)) {
                 continue;
-            } else {
-                found_format = true;
-                break;
             }
-            try stdout.print("{s}\n", .{fmtdesc.description});
+
+            std.log.debug("{s}", .{fmtdesc.description});
+            break :blk fmtdesc.pixelformat;
         }
-    }
-
-    if (found_format == false) {
-        try stdout.print("No supported video formats found\n", .{});
-        return null;
-    }
-
-    const pixelformat = fmtdesc.pixelformat;
+        std.log.err("No supported video formats found", .{});
+        return error.UnsupportedVideoFormat;
+    };
 
     const format = v4l2.v4l2_format{
         .type = v4l2.V4L2_BUF_TYPE_VIDEO_CAPTURE,
@@ -223,13 +278,13 @@ fn readWebcamPixels(allocator: std.mem.Allocator, path: []const u8, sample_time:
     };
 
     if (ioctl(fd, v4l2.VIDIOC_G_FMT, &format) == -1) {
-        try stdout.print("Failed to get image format", .{});
-        return null;
+        std.log.err("Failed to get image format", .{});
+        return error.GetImageFormatFailed;
     }
 
     if (ioctl(fd, v4l2.VIDIOC_S_FMT, &format) == -1) {
-        try stdout.print("Failed to set image format", .{});
-        return null;
+        std.log.err("Failed to set image format", .{});
+        return error.SetImageFormatFailed;
     }
 
     var buffer_copy = DeviceImageBytes{
@@ -247,8 +302,8 @@ fn readWebcamPixels(allocator: std.mem.Allocator, path: []const u8, sample_time:
     };
 
     if (ioctl(fd, v4l2.VIDIOC_REQBUFS, &requestbuffers) == -1) {
-        try stdout.print("Failed to request buffers", .{});
-        return null;
+        std.log.err("Failed to request buffers", .{});
+        return error.RequestBuffersFailed;
     }
 
     var buffer = v4l2.v4l2_buffer{
@@ -283,8 +338,8 @@ fn readWebcamPixels(allocator: std.mem.Allocator, path: []const u8, sample_time:
     };
 
     if (ioctl(fd, v4l2.VIDIOC_QUERYBUF, &buffer) == -1) {
-        try stdout.print("Failed to query buffer", .{});
-        return null;
+        std.log.err("Failed to query buffer", .{});
+        return error.BufferQueryFailed;
     }
 
     var seconds: u8 = 0;
@@ -304,13 +359,16 @@ fn readWebcamPixels(allocator: std.mem.Allocator, path: []const u8, sample_time:
         fd,
         buffer.m.offset,
     ) catch {
-        try stdout.print("Failed to mmap", .{});
-        return null;
+        std.log.err("Failed to mmap", .{});
+        return error.MmapFailed;
     };
 
     const pixels = switch (pixelformat) {
-        v4l2.V4L2_PIX_FMT_YUYV => deviceImageBytesFromYUVToRGB(allocator, buffer_copy, format),
-        else => null,
+        v4l2.V4L2_PIX_FMT_YUYV => try deviceImageBytesFromYUVToRGB(allocator, buffer_copy, format),
+        else => {
+            std.log.err("Unknown pixel format: {d}", .{pixelformat});
+            return error.UnknownPixelFormat;
+        },
     };
 
     if (buffer_copy.start) |memory| {
@@ -318,90 +376,4 @@ fn readWebcamPixels(allocator: std.mem.Allocator, path: []const u8, sample_time:
     }
 
     return pixels;
-}
-
-const Args = struct {
-    measure: bool,
-    min_stimulus_length: ?f32,
-    sample_time: u8,
-    // Path to backlight (might have multiple monitors)
-    path_backlight: ?[]const u8,
-    // Path to video device (might have multiple webcams
-    path_dev_video: ?[]const u8,
-};
-
-pub fn main() !void {
-    var GPA = std.heap.GeneralPurposeAllocator(.{}){};
-    defer {
-        _ = GPA.deinit();
-    }
-    var allocator = GPA.allocator();
-
-    var args = Args{
-        .measure = false,
-        .min_stimulus_length = 0.0,
-        .sample_time = 4,
-        .path_backlight = null,
-        .path_dev_video = null,
-    };
-
-    var args_iter = try std.process.argsWithAllocator(allocator);
-    defer args_iter.deinit();
-
-    while (args_iter.next()) |arg| {
-        if (std.mem.eql(u8, arg, "--measure")) {
-            args.measure = true;
-        }
-        if (std.mem.eql(u8, arg, "--sample-time")) {
-            if (args_iter.next()) |sample_time| {
-                args.sample_time = try std.fmt.parseInt(u8, sample_time, 10);
-            }
-        }
-        if (std.mem.eql(u8, arg, "--min-stimulus-length")) {
-            if (args_iter.next()) |min_stimulus_length| {
-                args.min_stimulus_length = try std.fmt.parseFloat(f32, min_stimulus_length);
-            }
-        }
-        if (std.mem.eql(u8, arg, "--path-backlight")) {
-            if (args_iter.next()) |path| {
-                args.path_backlight = path;
-            }
-        }
-        if (std.mem.eql(u8, arg, "--path-dev-video")) {
-            if (args_iter.next()) |path| {
-                args.path_dev_video = path;
-            }
-        }
-    }
-
-    const stdout = std.io.getStdOut().writer();
-
-    if (args.path_dev_video) |path_dev_video| {
-        const pixels_maybe = try readWebcamPixels(allocator, path_dev_video, args.sample_time);
-        if (pixels_maybe) |pixels| {
-            defer allocator.free(pixels);
-            const avg_stim_len = averageStimulusLength(pixels);
-            if (args.measure) {
-                try stdout.print("{}\n", .{avg_stim_len});
-            }
-
-            if (args.measure == false)
-                if (args.path_backlight) |path_backlight| {
-                    const path_brightness_max = try std.mem.concat(allocator, u8, &.{
-                        path_backlight,
-                        "/max_brightness",
-                    });
-                    const backlight_max_brightness = try readBacklightFile(
-                        allocator,
-                        path_brightness_max,
-                    );
-                    defer allocator.free(path_brightness_max);
-
-                    if (args.min_stimulus_length) |min_stimulus_length| {
-                        const brightness = calculateNewBrightness(avg_stim_len, backlight_max_brightness, min_stimulus_length);
-                        try stdout.print("{d}", .{brightness});
-                    }
-                } else try stdout.print(USAGE, .{});
-        }
-    } else try stdout.print(USAGE, .{});
 }
